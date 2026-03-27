@@ -21,6 +21,7 @@ export default function HorrorGame() {
   const [isDamaged, setIsDamaged] = useState(false);
   const [bearNear, setBearNear] = useState(false);
   const [message, setMessage] = useState("");
+  const [screamer, setScreamer] = useState(false);
 
   const showMessage = useCallback((msg: string) => {
     setMessage(msg);
@@ -41,9 +42,19 @@ export default function HorrorGame() {
     const engine = new GameEngine(canvasRef.current, {
       onHealthChange: (hp) => {
         setHealth(hp);
-        if (hp <= 0) setGameState("dead");
+        if (hp <= 0) {
+          setScreamer(true);
+          setTimeout(() => {
+            setScreamer(false);
+            setGameState("dead");
+          }, 2200);
+        }
         setIsDamaged(true);
         setTimeout(() => setIsDamaged(false), 300);
+      },
+      onScreamer: () => {
+        setScreamer(true);
+        setTimeout(() => setScreamer(false), 2200);
       },
       onCollect: (id) => {
         setCollected((prev) => {
@@ -211,6 +222,12 @@ export default function HorrorGame() {
 
           <div className="horror-crosshair">+</div>
           <div className="horror-flashlight-hint">🔦 Мышь = обзор (клик для захвата)</div>
+          {screamer && (
+            <div className="horror-screamer">
+              <img src={BEAR_IMAGE} alt="SCREAMER" className="horror-screamer-img" />
+              <div className="horror-screamer-text">ОН ТЕБЯ НАШЁЛ</div>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -250,10 +267,18 @@ class GameEngine {
     phase: number;
   }> = [];
 
+  private audioCtx!: AudioContext;
+  private ambienceGain!: GainNode;
+  private bearGain!: GainNode;
+  private lastBearSoundTime = 0;
+  private lastScreamerTime = 0;
+  private screamerShown = false;
+
   private callbacks: {
     onHealthChange: (hp: number) => void;
     onCollect: (id: number) => void;
     onBearNear: (near: boolean) => void;
+    onScreamer: () => void;
   };
 
   constructor(
@@ -262,6 +287,7 @@ class GameEngine {
       onHealthChange: (hp: number) => void;
       onCollect: (id: number) => void;
       onBearNear: (near: boolean) => void;
+      onScreamer: () => void;
     }
   ) {
     this.container = container;
@@ -292,6 +318,7 @@ class GameEngine {
     this.buildScene();
     this.setupPointerLock();
     this.setupResize();
+    this.initAudio();
   }
 
   private buildScene() {
@@ -614,8 +641,12 @@ class GameEngine {
     this.flashlightTarget = new THREE.Object3D();
     this.scene.add(this.flashlightTarget);
 
-    this.flashlight = new THREE.SpotLight(0xffeedd, 3.5, 20, Math.PI / 9, 0.35, 1.5);
-    this.flashlight.castShadow = false;
+    this.flashlight = new THREE.SpotLight(0xfff5e0, 12, 40, Math.PI / 7, 0.18, 0.8);
+    this.flashlight.castShadow = true;
+    this.flashlight.shadow.mapSize.width = 512;
+    this.flashlight.shadow.mapSize.height = 512;
+    this.flashlight.shadow.camera.near = 0.3;
+    this.flashlight.shadow.camera.far = 40;
     this.scene.add(this.flashlight);
     this.scene.add(this.flashlight.target);
   }
@@ -648,6 +679,7 @@ class GameEngine {
     this.checkToyPickup();
     this.animateToys(t);
     this.updateFlicker(delta, t);
+    this.updateAudio(this.camera.position.distanceTo(this.bear.position));
 
     this.renderer.render(this.scene, this.camera);
   }
@@ -712,6 +744,17 @@ class GameEngine {
 
     bearPos.y = 1.0 + Math.sin(t * 4) * 0.05;
 
+    if (dist < 3 && !this.screamerShown) {
+      const now = performance.now();
+      if (now - this.lastScreamerTime > 8000) {
+        this.lastScreamerTime = now;
+        this.screamerShown = true;
+        this.playScreamerSound();
+        this.callbacks.onScreamer();
+        setTimeout(() => { this.screamerShown = false; }, 9000);
+      }
+    }
+
     if (dist < 1.5) {
       const now = performance.now();
       if (now - this.lastDamageTime > 600) {
@@ -731,6 +774,7 @@ class GameEngine {
       if (d < 1.5) {
         this.collectedIds.add(id);
         this.scene.remove(mesh);
+        this.playPickupSound();
         this.callbacks.onCollect(id);
       }
     });
@@ -745,6 +789,127 @@ class GameEngine {
     });
   }
 
+  private initAudio() {
+    try {
+      this.audioCtx = new AudioContext();
+      this.ambienceGain = this.audioCtx.createGain();
+      this.ambienceGain.gain.value = 0.18;
+      this.ambienceGain.connect(this.audioCtx.destination);
+      this.bearGain = this.audioCtx.createGain();
+      this.bearGain.gain.value = 0;
+      this.bearGain.connect(this.audioCtx.destination);
+      this.startAmbience();
+    } catch (e) {
+      console.warn("Audio init failed", e);
+    }
+  }
+
+  private startAmbience() {
+    const ctx = this.audioCtx;
+    const loop = () => {
+      if (!ctx || ctx.state === "closed") return;
+      const buf = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = (Math.random() * 2 - 1) * 0.3 * Math.exp(-i / (ctx.sampleRate * 1.5));
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.value = 180 + Math.random() * 80;
+      src.connect(lp);
+      lp.connect(this.ambienceGain);
+      src.start();
+      src.onended = () => setTimeout(loop, 800 + Math.random() * 1200);
+    };
+    loop();
+  }
+
+  private playBearGrowl() {
+    const ctx = this.audioCtx;
+    if (!ctx || ctx.state === "closed") return;
+    const dur = 0.6 + Math.random() * 0.4;
+    const buf = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+      const t = i / ctx.sampleRate;
+      const env = Math.sin(Math.PI * t / dur);
+      data[i] = (Math.random() * 2 - 1) * env * 0.9;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 140 + Math.random() * 60;
+    const dist = ctx.createWaveShaper();
+    const curve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const x = (i * 2) / 256 - 1;
+      curve[i] = (Math.PI + 200) * x / (Math.PI + 200 * Math.abs(x));
+    }
+    dist.curve = curve;
+    src.connect(lp);
+    lp.connect(dist);
+    const g = ctx.createGain();
+    g.gain.value = 0.5;
+    dist.connect(g);
+    g.connect(ctx.destination);
+    src.start();
+  }
+
+  private playScreamerSound() {
+    const ctx = this.audioCtx;
+    if (!ctx || ctx.state === "closed") return;
+    const dur = 1.8;
+    const buf = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+      const t = i / ctx.sampleRate;
+      const env = t < 0.1 ? t / 0.1 : Math.exp(-(t - 0.1) * 1.5);
+      const freq = 280 + Math.sin(t * 30) * 80;
+      data[i] = Math.sin(2 * Math.PI * freq * t) * env * 0.95
+        + (Math.random() * 2 - 1) * env * 0.4;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const g = ctx.createGain();
+    g.gain.value = 1.4;
+    src.connect(g);
+    g.connect(ctx.destination);
+    src.start();
+  }
+
+  private playPickupSound() {
+    const ctx = this.audioCtx;
+    if (!ctx || ctx.state === "closed") return;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(440, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
+    g.gain.setValueAtTime(0.3, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.3);
+  }
+
+  private updateAudio(dist: number) {
+    if (!this.audioCtx || this.audioCtx.state === "closed") return;
+    if (this.audioCtx.state === "suspended") this.audioCtx.resume();
+
+    const now = performance.now();
+    if (dist < 7 && now - this.lastBearSoundTime > 2200) {
+      this.lastBearSoundTime = now;
+      this.playBearGrowl();
+    }
+
+    const nearVol = dist < 8 ? Math.max(0, (8 - dist) / 8) * 0.25 : 0;
+    this.bearGain.gain.setTargetAtTime(nearVol, this.audioCtx.currentTime, 0.5);
+  }
+
   destroy() {
     cancelAnimationFrame(this.animFrameId);
     this._cleanupMouseMove?.();
@@ -752,6 +917,7 @@ class GameEngine {
     if (this.renderer.domElement.parentNode) {
       this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
     }
+    try { this.audioCtx?.close(); } catch (e) { void e; }
     document.exitPointerLock();
   }
 }
