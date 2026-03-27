@@ -233,6 +233,18 @@ class GameEngine {
   private bear: THREE.Group;
   private bearSpeed = 0.03;
   private bearAngle = 0;
+  private flickerLights: Array<{
+    light: THREE.PointLight;
+    bulb: THREE.Mesh;
+    baseIntensity: number;
+    baseColor: number;
+    flickerTimer: number;
+    flickerDuration: number;
+    isOff: boolean;
+    offTimer: number;
+    offDuration: number;
+    phase: number;
+  }> = [];
 
   private callbacks: {
     onHealthChange: (hp: number) => void;
@@ -362,31 +374,104 @@ class GameEngine {
   }
 
   private buildLights() {
-    const ambient = new THREE.AmbientLight(0x110008, 0.3);
+    const ambient = new THREE.AmbientLight(0x0a0005, 0.25);
     this.scene.add(ambient);
 
-    const flickerColors = [0x220011, 0x110022, 0x001100];
-    const lightPositions = [
-      [-5, 3.5, -5], [5, 3.5, -5], [0, 3.5, 0],
-      [-5, 3.5, 5], [5, 3.5, 5],
+    const lightDefs = [
+      { pos: [-5, 3.6, -5],  color: 0xff4422, intensity: 1.4, radius: 14 },
+      { pos: [ 5, 3.6, -5],  color: 0xdd2244, intensity: 1.2, radius: 13 },
+      { pos: [ 0, 3.6,  0],  color: 0xff3311, intensity: 1.6, radius: 16 },
+      { pos: [-5, 3.6,  5],  color: 0xcc1133, intensity: 1.1, radius: 12 },
+      { pos: [ 5, 3.6,  5],  color: 0xff5500, intensity: 1.3, radius: 14 },
+      { pos: [-10, 3.6, -10], color: 0x881122, intensity: 0.9, radius: 10 },
+      { pos: [ 10, 3.6, -10], color: 0x771133, intensity: 0.9, radius: 10 },
+      { pos: [-10, 3.6,  10], color: 0x882211, intensity: 0.9, radius: 10 },
+      { pos: [ 10, 3.6,  10], color: 0x771122, intensity: 0.9, radius: 10 },
     ];
 
-    lightPositions.forEach(([x, y, z], i) => {
-      const light = new THREE.PointLight(
-        i === 2 ? 0x330011 : flickerColors[i % flickerColors.length],
-        0.8,
-        12
-      );
-      light.position.set(x, y, z);
-      light.castShadow = true;
+    lightDefs.forEach(({ pos, color, intensity, radius }, i) => {
+      const light = new THREE.PointLight(color, intensity, radius);
+      light.position.set(pos[0], pos[1], pos[2]);
+      light.castShadow = i < 3;
       this.scene.add(light);
 
-      const bulb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.1, 8, 8),
-        new THREE.MeshBasicMaterial({ color: i === 2 ? 0xff2244 : 0x553333 })
-      );
-      bulb.position.set(x, y, z);
+      const bulbMat = new THREE.MeshBasicMaterial({ color });
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 8), bulbMat);
+      bulb.position.set(pos[0], pos[1], pos[2]);
       this.scene.add(bulb);
+
+      const coneGeo = new THREE.CylinderGeometry(0, 0.18, 0.3, 8, 1, true);
+      const coneMat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.08,
+        side: THREE.BackSide,
+      });
+      const cone = new THREE.Mesh(coneGeo, coneMat);
+      cone.position.set(pos[0], pos[1] - 0.15, pos[2]);
+      this.scene.add(cone);
+
+      this.flickerLights.push({
+        light,
+        bulb,
+        baseIntensity: intensity,
+        baseColor: color,
+        flickerTimer: Math.random() * 3,
+        flickerDuration: 0.05 + Math.random() * 0.12,
+        isOff: false,
+        offTimer: 4 + Math.random() * 10,
+        offDuration: 0.08 + Math.random() * 0.5,
+        phase: Math.random() * Math.PI * 2,
+      });
+    });
+  }
+
+  private updateFlicker(delta: number, t: number) {
+    this.flickerLights.forEach((fl) => {
+      fl.flickerTimer -= delta;
+      fl.offTimer -= delta;
+
+      if (fl.isOff) {
+        if (fl.offTimer <= 0) {
+          fl.isOff = false;
+          fl.offTimer = 3 + Math.random() * 12;
+          fl.offDuration = 0.06 + Math.random() * 0.4;
+        }
+        fl.light.intensity = 0;
+        (fl.bulb.material as THREE.MeshBasicMaterial).color.setHex(0x111111);
+        return;
+      }
+
+      if (fl.offTimer <= 0) {
+        fl.isOff = true;
+        fl.offTimer = fl.offDuration;
+        fl.flickerTimer = 0.05 + Math.random() * 0.1;
+        fl.light.intensity = 0;
+        return;
+      }
+
+      if (fl.flickerTimer <= 0) {
+        fl.flickerTimer = 0.04 + Math.random() * 0.15;
+        const roll = Math.random();
+        if (roll < 0.15) {
+          fl.light.intensity = fl.baseIntensity * (0.05 + Math.random() * 0.2);
+        } else if (roll < 0.25) {
+          fl.light.intensity = fl.baseIntensity * (1.5 + Math.random() * 0.5);
+        } else {
+          const wave = Math.sin(t * 8 + fl.phase) * 0.15;
+          fl.light.intensity = fl.baseIntensity * (0.85 + wave + Math.random() * 0.1);
+        }
+        const mat = fl.bulb.material as THREE.MeshBasicMaterial;
+        const bright = fl.light.intensity / fl.baseIntensity;
+        const r = ((fl.baseColor >> 16) & 0xff) * bright;
+        const g = ((fl.baseColor >> 8) & 0xff) * bright;
+        const b = (fl.baseColor & 0xff) * bright;
+        mat.color.setRGB(
+          Math.min(1, r / 255),
+          Math.min(1, g / 255),
+          Math.min(1, b / 255)
+        );
+      }
     });
   }
 
@@ -541,6 +626,7 @@ class GameEngine {
     this.updateBear(delta, t);
     this.checkToyPickup();
     this.animateToys(t);
+    this.updateFlicker(delta, t);
 
     this.renderer.render(this.scene, this.camera);
   }
