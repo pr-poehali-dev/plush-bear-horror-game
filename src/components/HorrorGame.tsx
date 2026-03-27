@@ -210,6 +210,7 @@ export default function HorrorGame() {
           )}
 
           <div className="horror-crosshair">+</div>
+          <div className="horror-flashlight-hint">🔦 Мышь = обзор (клик для захвата)</div>
         </>
       )}
     </div>
@@ -231,8 +232,11 @@ class GameEngine {
   private toyMeshes: THREE.Mesh[] = [];
   private collectedIds: Set<number> = new Set();
   private bear: THREE.Group;
-  private bearSpeed = 0.03;
+  private bearSpeed = 0.015;
   private bearAngle = 0;
+  private flashlight!: THREE.SpotLight;
+  private flashlightTarget!: THREE.Object3D;
+  private mouseSensitivity = 0.002;
   private flickerLights: Array<{
     light: THREE.PointLight;
     bulb: THREE.Mesh;
@@ -308,6 +312,7 @@ class GameEngine {
     this.buildLights();
     this.buildToys();
     this.buildBear();
+    this.buildFlashlight();
   }
 
   private buildWalls() {
@@ -589,14 +594,30 @@ class GameEngine {
   }
 
   private setupPointerLock() {
-    document.addEventListener("mousemove", (e) => {
-      if (document.pointerLockElement === this.container.querySelector("canvas") ||
-          document.pointerLockElement === this.container) {
-        this.yaw -= e.movementX * 0.002;
-        this.pitch -= e.movementY * 0.002;
-        this.pitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, this.pitch));
+    const onMouseMove = (e: MouseEvent) => {
+      const locked =
+        document.pointerLockElement === this.container.querySelector("canvas") ||
+        document.pointerLockElement === this.container;
+      if (locked) {
+        this.yaw -= e.movementX * this.mouseSensitivity;
+        this.pitch -= e.movementY * this.mouseSensitivity;
+        this.pitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, this.pitch));
       }
-    });
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    this._cleanupMouseMove = () => document.removeEventListener("mousemove", onMouseMove);
+  }
+
+  private _cleanupMouseMove: (() => void) | null = null;
+
+  private buildFlashlight() {
+    this.flashlightTarget = new THREE.Object3D();
+    this.scene.add(this.flashlightTarget);
+
+    this.flashlight = new THREE.SpotLight(0xffeedd, 3.5, 20, Math.PI / 9, 0.35, 1.5);
+    this.flashlight.castShadow = false;
+    this.scene.add(this.flashlight);
+    this.scene.add(this.flashlight.target);
   }
 
   private setupResize() {
@@ -653,6 +674,18 @@ class GameEngine {
     this.camera.rotation.y = this.yaw;
     this.camera.rotation.x = this.pitch;
     this.camera.position.y = 1.7;
+
+    const camDir = new THREE.Vector3();
+    this.camera.getWorldDirection(camDir);
+    const cp = this.camera.position;
+
+    this.flashlight.position.set(cp.x + camDir.x * 0.1, cp.y - 0.15, cp.z + camDir.z * 0.1);
+    this.flashlight.target.position.set(
+      cp.x + camDir.x * 10,
+      cp.y + camDir.y * 10,
+      cp.z + camDir.z * 10
+    );
+    this.flashlight.target.updateMatrixWorld();
   }
 
   private updateBear(delta: number, t: number) {
@@ -667,12 +700,12 @@ class GameEngine {
     this.callbacks.onBearNear(isNear);
 
     if (dist < 18) {
-      const speed = dist < 6 ? this.bearSpeed * 3.5 : this.bearSpeed;
+      const speed = dist < 5 ? this.bearSpeed * 2.0 : this.bearSpeed;
       bearPos.x += (dx / dist) * speed * 60 * delta;
       bearPos.z += (dz / dist) * speed * 60 * delta;
       this.bear.lookAt(playerPos.x, bearPos.y, playerPos.z);
     } else {
-      this.bearAngle += delta * 0.5;
+      this.bearAngle += delta * 0.3;
       bearPos.x = Math.sin(this.bearAngle) * 8;
       bearPos.z = Math.cos(this.bearAngle) * 8;
     }
@@ -714,6 +747,7 @@ class GameEngine {
 
   destroy() {
     cancelAnimationFrame(this.animFrameId);
+    this._cleanupMouseMove?.();
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode) {
       this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);

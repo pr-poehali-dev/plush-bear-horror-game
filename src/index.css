@@ -561,3 +561,16 @@
     opacity: 0.2;
   }
 }
+
+.horror-flashlight-hint {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #443333;
+  font-size: 11px;
+  letter-spacing: 2px;
+  pointer-events: none;
+  z-index: 100;
+  white-space: nowrap;
+}
